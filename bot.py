@@ -65,6 +65,11 @@ def db_init():
             )
         """)
         con.execute("""
+            CREATE TABLE IF NOT EXISTS pending_admin_remove (
+                owner_id INTEGER PRIMARY KEY
+            )
+        """)
+        con.execute("""
             CREATE TABLE IF NOT EXISTS waiting_user_message (
                 user_id INTEGER PRIMARY KEY
             )
@@ -146,6 +151,7 @@ def admin_keyboard():
 async def send_photo_or_text(bot: Bot, chat_id: int, text: str, keyboard=None):
     # Фото отключено: меню и все разделы отправляются только текстом с кнопками.
     await bot.send_message(chat_id, text, reply_markup=keyboard)
+
 
 START_TEXT = """Добро пожаловать.
 
@@ -231,7 +237,6 @@ async def contact(callback, bot: Bot):
 
 
 # ---------- СКРЫТАЯ ПАНЕЛЬ ВЛАДЕЛЬЦА ----------
-# Обычные пользователи не видят эту команду в меню.
 @dp.message(Command("panel"))
 async def hidden_admin_panel(message: Message):
     if message.from_user.id != OWNER_ID:
@@ -270,7 +275,6 @@ async def admin_remove_start(callback):
     await callback.message.answer(
         "Отправьте числовой Telegram ID администратора, которого хотите удалить."
     )
-    # Используем специальный временный режим.
     with db() as con:
         con.execute(
             "CREATE TABLE IF NOT EXISTS pending_admin_remove (owner_id INTEGER PRIMARY KEY)"
@@ -308,7 +312,6 @@ async def admin_reply(message: Message, bot: Bot):
 
     target = get_target_user(message.reply_to_message.message_id)
     if not target:
-        # Если это не reply на сообщение пользователя, не мешаем обычной логике.
         return
 
     try:
@@ -358,10 +361,8 @@ async def all_messages(message: Message, bot: Bot):
                 await message.answer(f"Администратор {target_id} удалён.")
                 return
 
-        # Не пересылаем сообщения владельца самому себе.
         return
 
-    # Сообщения обычных пользователей отправляем ВСЕМ администраторам.
     if is_admin(uid):
         return
 
@@ -374,7 +375,6 @@ async def all_messages(message: Message, bot: Bot):
             (uid,),
         ).fetchone()
 
-    # Обычные сообщения вне режима «Написать через бота» не пересылаем.
     if not waiting:
         return
 
@@ -403,7 +403,6 @@ async def all_messages(message: Message, bot: Bot):
         except Exception:
             logging.exception("Не удалось отправить сообщение админу %s", admin_id)
 
-    # После отправки автоматически возвращаем пользователя в главное меню.
     with db() as con:
         con.execute(
             "DELETE FROM waiting_user_message WHERE user_id = ?",
@@ -420,8 +419,6 @@ WEBHOOK_PATH = "/telegram/webhook"
 def get_webhook_url():
     configured = os.getenv("WEBHOOK_URL", "").strip().rstrip("/")
     if configured:
-        # Accept both a full webhook URL and a bare Render service URL.
-        # Telegram must receive updates at the registered aiohttp route.
         if configured.endswith(WEBHOOK_PATH):
             return configured
         return configured + WEBHOOK_PATH
@@ -450,6 +447,10 @@ async def on_shutdown(bot: Bot):
     await bot.session.close()
 
 
+async def health_check(request):
+    return web.Response(text="OK")
+
+
 async def main():
     if not BOT_TOKEN:
         raise RuntimeError("Не задан BOT_TOKEN")
@@ -463,22 +464,19 @@ async def main():
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
-    async def health_check(request):
-    return web.Response(text="OK")
+    app = web.Application()
+    app.router.add_get("/", health_check)
 
-app = web.Application()
-app.router.add_get("/", health_check)
     SimpleRequestHandler(
         dispatcher=dp,
         bot=bot,
     ).register(app, path=WEBHOOK_PATH)
+
     setup_application(app, dp, bot=bot)
 
     port = int(os.getenv("PORT", "10000"))
     logging.info("Starting webhook server on 0.0.0.0:%s", port)
 
-    # main() is already running inside asyncio.run(), so web.run_app()
-    # would try to create/run a second event loop. Use an AppRunner instead.
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host="0.0.0.0", port=port)
